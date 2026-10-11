@@ -1,0 +1,17 @@
+.DS_Store
+*.mp4
+*.webm
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+downloads/
+sm-media/
+.env
+.env.*
+cookies.txt
+*.cookies
+__pycache__/
+.venv/

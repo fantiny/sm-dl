@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# sm-dl — multi-platform social media downloader (yt-dlp / gallery-dl / lux)
+# Usage:
+#   sm-dl <url> [more urls...]
+#   sm-dl -o DIR <url>
+#   sm-dl --tool yt-dlp|gallery-dl|lux|auto <url>
+#   sm-dl --images <url>          # force gallery-dl
+#   sm-dl --cookies-from-browser chrome|safari|firefox
+set -euo pipefail
+
+OUT="${SM_DL_OUT:-$HOME/Downloads/sm-media}"
+TOOL="auto"
+COOKIES_FROM=""
+FORCE_IMAGES=0
+URLS=()
+
+usage() {
+  cat <<'EOF'
+sm-dl — download social media video/image for local research
+
+  sm-dl [-o DIR] [--tool auto|yt-dlp|gallery-dl|lux] [--images]
+        [--cookies-from-browser BROWSER] URL...
+
+Routing (auto):
+  抖音 / 小红书 / 西瓜          → lux  (fallback yt-dlp)
+  B站 / YouTube / TikTok / X / IG / FB / Reddit / 微博 → yt-dlp
+  图集 / 帖子多图               → gallery-dl (--images 或识别为图站)
+
+Env:
+  SM_DL_OUT   default output directory
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -o|--output) OUT="$2"; shift 2 ;;
+    --tool) TOOL="$2"; shift 2 ;;
+    --images) FORCE_IMAGES=1; shift ;;
+    --cookies-from-browser) COOKIES_FROM="$2"; shift 2 ;;
+    --) shift; URLS+=("$@"); break ;;
+    -*)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *) URLS+=("$1"); shift ;;
+  esac
+done
+
+if [[ ${#URLS[@]} -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+mkdir -p "$OUT"
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing dependency: $1" >&2
+    exit 1
+  }
+}
+
+pick_tool() {
+  local url="$1"
+  local host
+  host=$(printf '%s' "$url" | sed -E 's#^[a-zA-Z]+://##' | cut -d/ -f1 | tr '[:upper:]' '[:lower:]')
+
+  if [[ $FORCE_IMAGES -eq 1 ]]; then
+    echo gallery-dl
+    return
+  fi
+  if [[ "$TOOL" != "auto" ]]; then
+    echo "$TOOL"
+    return
+  fi
+
+  case "$host" in
+    *douyin.com|*iesdouyin.com|*ixigua.com|*xigua.com|*xiaohongshu.com|*xhslink.com)
+      echo lux
+      ;;
+    *pixiv.net|*deviantart.com|*artstation.com|*danbooru*|*gelbooru*|*imgur.com)
+      echo gallery-dl
+      ;;
+    *)
+      echo yt-dlp
+      ;;
+  esac
+}
+
+run_ytdlp() {
+  need yt-dlp
+  need ffmpeg
+  local args=(
+    -o "$OUT/%(extractor)s/%(uploader,channel,creator,id)s/%(title).80B [%(id)s].%(ext)s"
+    --no-mtime
+    --embed-metadata
+    --write-info-json
+    --restrict-filenames
+  )
+  if [[ -n "$COOKIES_FROM" ]]; then
+    args+=(--cookies-from-browser "$COOKIES_FROM")
+  fi
+  yt-dlp "${args[@]}" "$@"
+}
+
+run_gallery() {
+  need gallery-dl
+  local args=(-d "$OUT" --write-metadata)
+  if [[ -n "$COOKIES_FROM" ]]; then
+    args+=(--cookies-from-browser "$COOKIES_FROM")
+  fi
+  gallery-dl "${args[@]}" "$@"
+}
+
+run_lux() {
+  need lux
+  # lux: -o is output directory; filename from title
+  local args=(-o "$OUT")
+  if [[ -n "$COOKIES_FROM" ]]; then
+    # lux expects a cookies.txt path, not browser name — hint user
+    echo "note: lux needs cookies file; yt-dlp --cookies-from-browser may work as fallback" >&2
+  fi
+  if lux "${args[@]}" "$@"; then
+    return 0
+  fi
+  echo "lux failed, fallback to yt-dlp..." >&2
+  run_ytdlp "$@"
+}
+
+for url in "${URLS[@]}"; do
+  chosen=$(pick_tool "$url")
+  echo "==> [$chosen] $url"
+  echo "    out: $OUT"
+  case "$chosen" in
+    yt-dlp) run_ytdlp "$url" ;;
+    gallery-dl) run_gallery "$url" ;;
+    lux) run_lux "$url" ;;
+    *) echo "unknown tool: $chosen" >&2; exit 1 ;;
+  esac
+done
+
+echo "done → $OUT"
