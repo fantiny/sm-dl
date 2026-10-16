@@ -15,3 +15,7 @@ cookies.txt
 *.cookies
 __pycache__/
 .venv/
+.sm-dl-douyin-*.json
+*.info.json
+.pytest_cache/
+

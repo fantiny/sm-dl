@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# sm-dl — multi-platform social media downloader (yt-dlp / gallery-dl / lux)
+# sm-dl — multi-platform social media downloader (yt-dlp / gallery-dl / lux / Douyin strategies)
 # Usage:
 #   sm-dl <url> [more urls...]
 #   sm-dl -o DIR <url>
 #   sm-dl --tool yt-dlp|gallery-dl|lux|auto <url>
 #   sm-dl --images <url>          # force gallery-dl
 #   sm-dl --cookies-from-browser chrome|safari|firefox
+#   sm-dl --skip-browser          # Douyin: skip Playwright CDN fallback
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${SM_DL_OUT:-$HOME/Downloads/sm-media}"
 TOOL="auto"
 COOKIES_FROM=""
 FORCE_IMAGES=0
+SKIP_BROWSER=0
 URLS=()
 
 usage() {
@@ -19,10 +22,15 @@ usage() {
 sm-dl — download social media video/image for local research
 
   sm-dl [-o DIR] [--tool auto|yt-dlp|gallery-dl|lux] [--images]
-        [--cookies-from-browser BROWSER] URL...
+        [--cookies-from-browser BROWSER] [--skip-browser] URL...
 
 Routing (auto):
-  抖音 / 小红书 / 西瓜          → lux  (fallback yt-dlp)
+  抖音 / v.douyin / iesdouyin   → Python Douyin strategy cascade
+      1) normalize URL (jingxuan/modal_id/short link → /video/<id>)
+      2) lux
+      3) yt-dlp (--proxy "" + safari→chrome→firefox cookies)
+      4) Playwright harvest CDN video+audio → ffmpeg merge
+  小红书 / 西瓜                 → lux  (fallback yt-dlp)
   B站 / YouTube / TikTok / X / IG / FB / Reddit / 微博 → yt-dlp
   图集 / 帖子多图               → gallery-dl (--images 或识别为图站)
 
@@ -37,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     -o|--output) OUT="$2"; shift 2 ;;
     --tool) TOOL="$2"; shift 2 ;;
     --images) FORCE_IMAGES=1; shift ;;
+    --skip-browser) SKIP_BROWSER=1; shift ;;
     --cookies-from-browser) COOKIES_FROM="$2"; shift 2 ;;
     --) shift; URLS+=("$@"); break ;;
     -*)
@@ -62,6 +71,34 @@ need() {
   }
 }
 
+is_douyin() {
+  local u
+  u=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  [[ "$u" == *douyin.com* || "$u" == *iesdouyin.com* ]]
+}
+
+python_bin() {
+  if [[ -x "$ROOT/.venv/bin/python" ]]; then
+    echo "$ROOT/.venv/bin/python"
+  else
+    echo "python3"
+  fi
+}
+
+run_douyin() {
+  local py args=()
+  py=$(python_bin)
+  args=(-m sm_dl -o "$OUT")
+  if [[ -n "$COOKIES_FROM" ]]; then
+    args+=(--cookies-from-browser "$COOKIES_FROM")
+  fi
+  if [[ $SKIP_BROWSER -eq 1 ]]; then
+    args+=(--skip-browser)
+  fi
+  # shellcheck disable=SC2086
+  PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" "$py" "${args[@]}" "$@"
+}
+
 pick_tool() {
   local url="$1"
   local host
@@ -76,8 +113,13 @@ pick_tool() {
     return
   fi
 
+  if is_douyin "$url"; then
+    echo douyin
+    return
+  fi
+
   case "$host" in
-    *douyin.com|*iesdouyin.com|*ixigua.com|*xigua.com|*xiaohongshu.com|*xhslink.com)
+    *ixigua.com|*xigua.com|*xiaohongshu.com|*xhslink.com)
       echo lux
       ;;
     *pixiv.net|*deviantart.com|*artstation.com|*danbooru*|*gelbooru*|*imgur.com)
@@ -116,10 +158,8 @@ run_gallery() {
 
 run_lux() {
   need lux
-  # lux: -o is output directory; filename from title
   local args=(-o "$OUT")
   if [[ -n "$COOKIES_FROM" ]]; then
-    # lux expects a cookies.txt path, not browser name — hint user
     echo "note: lux needs cookies file; yt-dlp --cookies-from-browser may work as fallback" >&2
   fi
   if lux "${args[@]}" "$@"; then
@@ -134,6 +174,7 @@ for url in "${URLS[@]}"; do
   echo "==> [$chosen] $url"
   echo "    out: $OUT"
   case "$chosen" in
+    douyin) run_douyin "$url" ;;
     yt-dlp) run_ytdlp "$url" ;;
     gallery-dl) run_gallery "$url" ;;
     lux) run_lux "$url" ;;
